@@ -9,7 +9,7 @@ import { toast } from '@/components/ui/ToastProvider';
 import { Sparkles, Mail, Lock, ArrowRight, ShieldCheck } from 'lucide-react';
 
 export default function LoginPage() {
-  const { signIn } = useAuth();
+  const { signIn, signInDemo } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -47,9 +47,14 @@ export default function LoginPage() {
     setEmail('admin@egest-congo.cg');
     setPassword('demo-congo-2026');
     setIsLoading(true);
-    await signIn('admin@egest-congo.cg', 'demo-congo-2026');
-    toast.success('Connecté en tant qu’Administrateur Démo !');
-    setIsLoading(false);
+    try {
+      await signInDemo();
+      toast.success('Connecté en tant qu’Administrateur Démo !');
+    } catch {
+      toast.error('Erreur lors de la connexion démo');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

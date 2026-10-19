@@ -20,7 +20,11 @@ import {
   Banknote,
   CreditCard,
   HelpCircle,
+  Download,
+  Barcode,
+  Percent,
 } from 'lucide-react';
+import { exportSalesToCSV } from '@/lib/export';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
@@ -71,9 +75,72 @@ function SalesContent() {
   // Recherche dans le sélecteur de produit de caisse
   const [productSearch, setProductSearch] = useState('');
 
-  const orgId = organization?.id || 'org_pointe_noire_01';
+  // Scanner Code-barres / Douchette
+  const [barcodeScanInput, setBarcodeScanInput] = useState('');
+  const barcodeInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Remise commerciale
+  const [discountType, setDiscountType] = useState<'PERCENT' | 'FIXED'>('FIXED');
+  const [discountValue, setDiscountValue] = useState<number>(0);
+
+  // Beep sonore caisse (Web Audio API natif)
+  const playBeep = (success = true) => {
+    try {
+      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) return;
+      const audioCtx = new AudioCtx();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.type = success ? 'sine' : 'square';
+      osc.frequency.setValueAtTime(success ? 880 : 220, audioCtx.currentTime);
+      gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.12);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.12);
+    } catch {
+      // Ignorer si audio non autorisé
+    }
+  };
+
+  const handleBarcodeSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const code = barcodeScanInput.trim().toLowerCase();
+    if (!code) return;
+
+    const matchedProduct = products.find(
+      (p) =>
+        p.is_active &&
+        (p.sku?.toLowerCase() === code ||
+          p.id.toLowerCase() === code ||
+          p.name.toLowerCase() === code)
+    );
+
+    if (matchedProduct) {
+      if (matchedProduct.stock_quantity <= 0) {
+        playBeep(false);
+        toast.error(`"${matchedProduct.name}" est en rupture de stock.`);
+      } else {
+        handleAddToCart(matchedProduct);
+        playBeep(true);
+        toast.success(`Scanné : ${matchedProduct.name} (+1)`);
+      }
+    } else {
+      playBeep(false);
+      toast.warning(`Aucun article trouvé pour le code : "${barcodeScanInput}"`);
+    }
+
+    setBarcodeScanInput('');
+    if (barcodeInputRef.current) {
+      barcodeInputRef.current.focus();
+    }
+  };
+
+  const orgId = organization?.id;
 
   const fetchData = React.useCallback(async () => {
+    if (!orgId) return;
     setIsLoading(true);
     try {
       const [allSales, allProducts] = await Promise.all([
@@ -179,9 +246,23 @@ function SalesContent() {
     setCart((prev) => prev.filter((it) => it.product.id !== productId));
   };
 
-  const totalCartAmount = cart.reduce((acc, it) => acc + it.subtotal, 0);
+  const subtotalCartAmount = cart.reduce((acc, it) => acc + it.subtotal, 0);
+
+  const discountAmount = useMemo(() => {
+    if (discountValue <= 0) return 0;
+    if (discountType === 'PERCENT') {
+      return Math.round((subtotalCartAmount * Math.min(100, discountValue)) / 100);
+    }
+    return Math.min(subtotalCartAmount, discountValue);
+  }, [subtotalCartAmount, discountType, discountValue]);
+
+  const totalCartAmount = Math.max(0, subtotalCartAmount - discountAmount);
 
   const handleValidateSale = async () => {
+    if (!orgId) {
+      toast.error('Organisation non chargée. Veuillez patienter un instant...');
+      return;
+    }
     if (cart.length === 0) {
       toast.error('Le panier est vide');
       return;
@@ -194,6 +275,7 @@ function SalesContent() {
         cashierId: user?.id,
         customerName: customerName.trim() || undefined,
         paymentMethod,
+        totalAmount: totalCartAmount,
         items: cart.map((it) => ({
           productId: it.product.id,
           quantity: it.quantity,
@@ -205,6 +287,7 @@ function SalesContent() {
       toast.success(`Vente de ${formatFCFA(totalCartAmount)} validée avec succès !`);
       setCart([]);
       setCustomerName('');
+      setDiscountValue(0);
       setIsPosOpen(false);
       fetchData();
 
@@ -231,17 +314,30 @@ function SalesContent() {
           </p>
         </div>
 
-        {canCreateSale && (
+        <div className="flex items-center gap-2">
           <Button
-            variant="primary"
+            variant="outline"
             size="md"
-            className="shadow-sm shadow-blue-600/20"
-            onClick={() => setIsPosOpen(true)}
+            onClick={() => exportSalesToCSV(filteredSales)}
+            disabled={sales.length === 0}
+            title="Exporter les ventes affichées au format Excel / CSV"
           >
-            <Plus className="w-4 h-4 mr-1.5" />
-            Nouvelle Vente (Caisse)
+            <Download className="w-4 h-4 mr-1.5 text-slate-500" />
+            Exporter (Excel/CSV)
           </Button>
-        )}
+
+          {canCreateSale && (
+            <Button
+              variant="primary"
+              size="md"
+              className="shadow-sm shadow-blue-600/20"
+              onClick={() => setIsPosOpen(true)}
+            >
+              <Plus className="w-4 h-4 mr-1.5" />
+              Nouvelle Vente (Caisse)
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Barre de Recherche & Filtres */}
@@ -372,8 +468,25 @@ function SalesContent() {
         <div className="grid grid-cols-1 md:grid-cols-12 gap-6 pt-2">
           {/* Colonne Gauche : Sélection Produits (7 colonnes) */}
           <div className="md:col-span-7 space-y-4 border-r border-slate-100 pr-0 md:pr-6 dark:border-slate-800">
+            {/* Scanner Douchette Rapide */}
+            <form onSubmit={handleBarcodeSubmit} className="flex gap-2">
+              <div className="flex-1">
+                <Input
+                  ref={barcodeInputRef}
+                  placeholder="Scanner code-barres / SKU + Entrée..."
+                  value={barcodeScanInput}
+                  onChange={(e) => setBarcodeScanInput(e.target.value)}
+                  startIcon={<Barcode className="w-4 h-4 text-[#1E40AF]" />}
+                  autoFocus
+                />
+              </div>
+              <Button type="submit" variant="outline" size="sm" className="shrink-0 px-3">
+                Scan
+              </Button>
+            </form>
+
             <Input
-              placeholder="Chercher un article en rayon..."
+              placeholder="Ou chercher un article par son nom..."
               value={productSearch}
               onChange={(e) => setProductSearch(e.target.value)}
               startIcon={<Search className="w-4 h-4" />}
@@ -466,6 +579,53 @@ function SalesContent() {
                 )}
               </div>
 
+              {/* Remise Commerciale */}
+              <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 space-y-2 mt-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                    <Percent className="w-3.5 h-3.5 text-blue-600" />
+                    Remise Commerciale
+                  </span>
+                  <div className="flex gap-1 text-[10px]">
+                    <button
+                      type="button"
+                      onClick={() => setDiscountType('FIXED')}
+                      className={`px-2 py-0.5 rounded font-bold transition-all ${
+                        discountType === 'FIXED'
+                          ? 'bg-[#1E40AF] text-white'
+                          : 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      FCFA
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDiscountType('PERCENT')}
+                      className={`px-2 py-0.5 rounded font-bold transition-all ${
+                        discountType === 'PERCENT'
+                          ? 'bg-[#1E40AF] text-white'
+                          : 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      %
+                    </button>
+                  </div>
+                </div>
+                <input
+                  type="number"
+                  min="0"
+                  max={discountType === 'PERCENT' ? 100 : subtotalCartAmount}
+                  value={discountValue === 0 ? '' : discountValue}
+                  onChange={(e) => setDiscountValue(Math.max(0, Number(e.target.value)))}
+                  placeholder={
+                    discountType === 'PERCENT'
+                      ? 'Pourcentage (ex: 10 pour 10%)'
+                      : 'Montant en FCFA (ex: 2000)'
+                  }
+                  className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-[#1E40AF] focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                />
+              </div>
+
               {/* Client & Paiement */}
               <div className="space-y-3 pt-2 border-t border-slate-100 dark:border-slate-800">
                 <Input
@@ -505,9 +665,21 @@ function SalesContent() {
             </div>
 
             {/* Total & Validation */}
-            <div className="pt-4 border-t border-slate-100 dark:border-slate-800">
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-xs font-semibold text-slate-500">TOTAL À ENCAISSER</span>
+            <div className="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-1.5">
+              <div className="flex items-center justify-between text-xs text-slate-500">
+                <span>Sous-total articles :</span>
+                <span className="font-semibold text-slate-700 dark:text-slate-300">
+                  {formatFCFA(subtotalCartAmount)}
+                </span>
+              </div>
+              {discountAmount > 0 && (
+                <div className="flex items-center justify-between text-xs text-emerald-600 dark:text-emerald-400 font-semibold">
+                  <span>Remise accordée :</span>
+                  <span>- {formatFCFA(discountAmount)}</span>
+                </div>
+              )}
+              <div className="flex items-center justify-between pt-1 mb-2">
+                <span className="text-xs font-bold text-slate-500">TOTAL NET À ENCAISSER</span>
                 <span className="text-xl font-black text-slate-900 dark:text-white">
                   {formatFCFA(totalCartAmount)}
                 </span>

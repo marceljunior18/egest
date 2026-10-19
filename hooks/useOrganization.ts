@@ -1,7 +1,7 @@
 'use client';
 
 // ==============================================================================
-// eGest MVP V1 - useOrganization HOOK
+// eGest MVP V1 - useOrganization HOOK (AUTO-RÉSOLUTION & PROVISIONING RÉSILIENT)
 // ==============================================================================
 
 import { useState, useEffect, useCallback } from 'react';
@@ -9,6 +9,7 @@ import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { LocalStore } from '@/lib/store';
 import { Organization, OrganizationMember, UserRole } from '@/types';
 import { useAuth } from './useAuth';
+import { isValidUUID } from '@/lib/utils';
 
 export function useOrganization() {
   const { user } = useAuth();
@@ -19,38 +20,46 @@ export function useOrganization() {
 
   const fetchOrganizationData = useCallback(async () => {
     setIsLoading(true);
+
+    // 1. Mode Local pur si Supabase n'est pas configuré
     if (!isSupabaseConfigured) {
       const org = LocalStore.getOrganization();
       const mems = LocalStore.getMembers();
       setOrganization(org);
       setMembers(mems);
-      // Trouver le rôle de l'utilisateur actif
       const myMem = mems.find((m) => m.user_id === user?.id);
       setCurrentRole(myMem ? myMem.role : 'ADMIN');
       setIsLoading(false);
       return;
     }
 
-    if (!user) {
+    // 2. Si pas d'utilisateur authentifié Supabase
+    if (!user || !isValidUUID(user.id)) {
+      const localOrg = LocalStore.getOrganization();
+      setOrganization(localOrg);
+      setCurrentRole('ADMIN');
       setIsLoading(false);
       return;
     }
 
+    // 3. Utilisateur authentifié dans Supabase
     try {
-      // Trouver l'organisation de l'utilisateur
+      // Rechercher l'organisation rattachée dans organization_members
       const { data: memberData, error: memErr } = await supabase
         .from('organization_members')
         .select('*, organization:organizations(*)')
         .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
         .limit(1)
-        .single();
+        .maybeSingle();
 
       if (memErr && memErr.code !== 'PGRST116') {
-        console.error('Erreur chargement organisation:', memErr);
+        console.warn('Vérification organisation membre:', memErr.message);
       }
 
       if (memberData?.organization) {
-        setOrganization(memberData.organization as unknown as Organization);
+        const org = memberData.organization as unknown as Organization;
+        setOrganization(org);
         setCurrentRole(memberData.role as UserRole);
 
         // Charger tous les membres de cette org
@@ -62,9 +71,66 @@ export function useOrganization() {
         if (allMembers) {
           setMembers(allMembers as unknown as OrganizationMember[]);
         }
+        setIsLoading(false);
+        return;
+      }
+
+      // Si aucun lien trouvé dans organization_members, vérifier si l'utilisateur possède déjà une organisation
+      const { data: ownedOrg } = await supabase
+        .from('organizations')
+        .select('*')
+        .eq('owner_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (ownedOrg) {
+        // Réassocier l'organisation_members si manquant
+        await supabase.from('organization_members').upsert({
+          organization_id: ownedOrg.id,
+          user_id: user.id,
+          role: 'ADMIN',
+        });
+
+        setOrganization(ownedOrg as unknown as Organization);
+        setCurrentRole('ADMIN');
+        setIsLoading(false);
+        return;
+      }
+
+      // 4. AUTO-PROVISIONING : L'utilisateur est connecté mais n'a pas encore d'entreprise créée
+      // On crée automatiquement son entreprise par défaut pour garantir un organization_id UUID valide
+      console.log('Auto-provisioning de l’organisation eGest pour l’utilisateur:', user.id);
+      const { data: newOrg, error: createOrgErr } = await supabase
+        .from('organizations')
+        .insert({
+          name: 'Boutique Élite Pointe-Noire',
+          sector: 'Boutique',
+          city: 'Pointe-Noire',
+          country: 'Congo',
+          currency: 'FCFA',
+          owner_id: user.id,
+        })
+        .select()
+        .single();
+
+      if (!createOrgErr && newOrg) {
+        await supabase.from('organization_members').insert({
+          organization_id: newOrg.id,
+          user_id: user.id,
+          role: 'ADMIN',
+        });
+
+        setOrganization(newOrg as unknown as Organization);
+        setCurrentRole('ADMIN');
+      } else {
+        // En cas d'erreur RLS, repli local
+        console.warn('Repli organisation locale:', createOrgErr?.message);
+        setOrganization(LocalStore.getOrganization());
       }
     } catch (err) {
-      console.error('Erreur organisation:', err);
+      console.error('Erreur organisation, repli sécurisé:', err);
+      setOrganization(LocalStore.getOrganization());
     } finally {
       setIsLoading(false);
     }
@@ -76,7 +142,7 @@ export function useOrganization() {
 
   const updateOrganization = async (updates: Partial<Organization>) => {
     if (!organization) return;
-    if (!isSupabaseConfigured) {
+    if (!isSupabaseConfigured || !isValidUUID(organization.id)) {
       const updated = { ...organization, ...updates };
       LocalStore.setOrganization(updated);
       setOrganization(updated);
@@ -90,7 +156,7 @@ export function useOrganization() {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) throw new Error(error.message || 'Impossible de mettre à jour l’entreprise');
     setOrganization(data);
     return data;
   };
@@ -104,7 +170,7 @@ export function useOrganization() {
     country?: string;
     currency?: string;
   }) => {
-    if (!isSupabaseConfigured) {
+    if (!isSupabaseConfigured || !user || !isValidUUID(user.id)) {
       const newOrg: Organization = {
         id: `org_${Date.now()}`,
         name: data.name,
@@ -134,8 +200,6 @@ export function useOrganization() {
     }
 
     // Supabase
-    if (!user) throw new Error('Utilisateur non connecté');
-
     const { data: org, error: orgErr } = await supabase
       .from('organizations')
       .insert({
@@ -151,7 +215,7 @@ export function useOrganization() {
       .select()
       .single();
 
-    if (orgErr) throw orgErr;
+    if (orgErr) throw new Error(orgErr.message || 'Erreur lors de la création de l’entreprise');
 
     // Ajouter comme ADMIN
     const { error: memErr } = await supabase.from('organization_members').insert({
@@ -160,7 +224,9 @@ export function useOrganization() {
       role: 'ADMIN',
     });
 
-    if (memErr) throw memErr;
+    if (memErr) {
+      console.warn('Erreur ajout membre:', memErr);
+    }
 
     setOrganization(org);
     setCurrentRole('ADMIN');

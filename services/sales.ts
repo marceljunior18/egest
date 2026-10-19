@@ -1,10 +1,11 @@
 // ==============================================================================
-// eGest MVP V1 - SALES SERVICE
+// eGest MVP V1 - SALES SERVICE (AVEC VALIDATION UUID & GESTION ERREURS)
 // ==============================================================================
 
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { LocalStore } from '@/lib/store';
 import { Sale, SaleItem, PaymentMethod } from '@/types';
+import { isValidUUID } from '@/lib/utils';
 
 export interface CreateSaleItemParams {
   productId: string;
@@ -18,12 +19,13 @@ export interface CreateSaleParams {
   cashierId?: string;
   customerName?: string;
   paymentMethod: PaymentMethod;
+  totalAmount?: number;
   items: CreateSaleItemParams[];
 }
 
 export const SalesService = {
   async getSales(organizationId: string): Promise<Sale[]> {
-    if (!isSupabaseConfigured) {
+    if (!isSupabaseConfigured || !isValidUUID(organizationId)) {
       return LocalStore.getSales();
     }
     const { data, error } = await supabase
@@ -38,7 +40,10 @@ export const SalesService = {
       `)
       .eq('organization_id', organizationId)
       .order('created_at', { ascending: false });
-    if (error) throw error;
+    if (error) {
+      console.warn('Erreur Supabase getSales, repli local:', error.message);
+      return LocalStore.getSales();
+    }
     return data || [];
   },
 
@@ -49,9 +54,12 @@ export const SalesService = {
       throw new Error('Une vente doit contenir au moins un article');
     }
 
-    const totalAmount = items.reduce((sum, it) => sum + it.subtotal, 0);
+    const totalAmount =
+      params.totalAmount !== undefined
+        ? params.totalAmount
+        : items.reduce((sum, it) => sum + it.subtotal, 0);
 
-    if (!isSupabaseConfigured) {
+    if (!isSupabaseConfigured || !isValidUUID(organizationId)) {
       const saleId = `sal_${Date.now()}`;
       const products = LocalStore.getProducts();
       const movements = LocalStore.getStockMovements();
@@ -106,21 +114,28 @@ export const SalesService = {
       return newSale;
     }
 
-    // Supabase
+    // Assainissement pour Supabase PostgreSQL
+    const sanitizedCashierId = isValidUUID(cashierId) ? cashierId : null;
+    const sanitizedCustomerName = customerName?.trim() || null;
+
     const { data: sale, error: saleErr } = await supabase
       .from('sales')
       .insert({
         organization_id: organizationId,
-        cashier_id: cashierId,
-        customer_name: customerName?.trim() || null,
+        cashier_id: sanitizedCashierId,
+        customer_name: sanitizedCustomerName,
         payment_method: paymentMethod,
         total_amount: totalAmount,
       })
       .select()
       .single();
-    if (saleErr) throw saleErr;
 
-    // Items
+    if (saleErr) {
+      console.error('Erreur Supabase insertion vente:', saleErr);
+      throw new Error(saleErr.message || 'Impossible d’enregistrer la vente dans Supabase');
+    }
+
+    // Insertion des articles de vente
     const itemsToInsert = items.map((it) => ({
       sale_id: sale.id,
       product_id: it.productId,
@@ -130,21 +145,9 @@ export const SalesService = {
     }));
 
     const { error: itemsErr } = await supabase.from('sale_items').insert(itemsToInsert);
-    if (itemsErr) throw itemsErr;
-
-    // Déduction du stock si pas de trigger
-    for (const it of items) {
-      const { data: curProd } = await supabase
-        .from('products')
-        .select('stock_quantity')
-        .eq('id', it.productId)
-        .single();
-      if (curProd) {
-        await supabase
-          .from('products')
-          .update({ stock_quantity: Math.max(0, curProd.stock_quantity - it.quantity) })
-          .eq('id', it.productId);
-      }
+    if (itemsErr) {
+      console.error('Erreur Supabase insertion articles:', itemsErr);
+      throw new Error(itemsErr.message || 'Erreur lors de l’enregistrement des articles vendus');
     }
 
     return sale;

@@ -14,7 +14,9 @@ import {
   Edit2,
   DollarSign,
   PieChart,
+  Download,
 } from 'lucide-react';
+import { exportExpensesToCSV } from '@/lib/export';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
@@ -56,9 +58,10 @@ export default function ExpensesPage() {
     date: new Date().toISOString().split('T')[0],
   });
 
-  const orgId = organization?.id || 'org_pointe_noire_01';
+  const orgId = organization?.id;
 
   const fetchData = React.useCallback(async () => {
+    if (!orgId) return;
     setIsLoading(true);
     try {
       const data = await ExpensesService.getExpenses(orgId);
@@ -133,6 +136,10 @@ export default function ExpensesPage() {
 
   const handleSaveExpense = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!orgId) {
+      toast.error('Organisation non chargée. Veuillez patienter un instant...');
+      return;
+    }
     if (formData.amount <= 0) {
       toast.error('Le montant doit être supérieur à 0 FCFA');
       return;
@@ -155,8 +162,9 @@ export default function ExpensesPage() {
       }
       setIsModalOpen(false);
       fetchData();
-    } catch {
-      toast.error('Erreur lors de l’enregistrement de la dépense');
+    } catch (err: unknown) {
+      const error = err as Error;
+      toast.error(error.message || 'Erreur lors de l’enregistrement de la dépense');
     }
   };
 
@@ -185,12 +193,25 @@ export default function ExpensesPage() {
           </p>
         </div>
 
-        {canManageExpenses && (
-          <Button variant="primary" size="md" onClick={handleOpenCreateModal}>
-            <Plus className="w-4 h-4 mr-1.5" />
-            Nouvelle Dépense
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="md"
+            onClick={() => exportExpensesToCSV(filteredExpenses)}
+            disabled={expenses.length === 0}
+            title="Exporter les dépenses au format Excel / CSV"
+          >
+            <Download className="w-4 h-4 mr-1.5 text-slate-500" />
+            Exporter (Excel/CSV)
           </Button>
-        )}
+
+          {canManageExpenses && (
+            <Button variant="primary" size="md" onClick={handleOpenCreateModal}>
+              <Plus className="w-4 h-4 mr-1.5" />
+              Nouvelle Dépense
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Widget KPI & Répartition */}

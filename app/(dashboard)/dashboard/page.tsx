@@ -40,9 +40,10 @@ export default function DashboardPage() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
 
   const loadData = React.useCallback(async () => {
+    const orgId = organization?.id;
+    if (!orgId) return;
     setIsLoading(true);
     try {
-      const orgId = organization?.id || 'org_pointe_noire_01';
       const [allSales, allProducts, allExpenses] = await Promise.all([
         SalesService.getSales(orgId),
         ProductsService.getProducts(orgId),

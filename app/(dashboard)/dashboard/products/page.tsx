@@ -66,9 +66,10 @@ export default function ProductsPage() {
     is_active: true,
   });
 
-  const orgId = organization?.id || 'org_pointe_noire_01';
+  const orgId = organization?.id;
 
   const fetchData = React.useCallback(async () => {
+    if (!orgId) return;
     setIsLoading(true);
     try {
       const [prods, cats] = await Promise.all([
@@ -137,6 +138,10 @@ export default function ProductsPage() {
 
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!orgId) {
+      toast.error('Organisation non chargée. Veuillez patienter un instant...');
+      return;
+    }
     if (!formData.name.trim()) {
       toast.error('Le nom du produit est obligatoire');
       return;
@@ -161,8 +166,9 @@ export default function ProductsPage() {
       }
       setIsModalOpen(false);
       fetchData();
-    } catch {
-      toast.error('Une erreur est survenue lors de l’enregistrement');
+    } catch (err: unknown) {
+      const error = err as Error;
+      toast.error(error.message || 'Une erreur est survenue lors de l’enregistrement');
     }
   };
 
@@ -180,6 +186,10 @@ export default function ProductsPage() {
 
   const handleCreateCategory = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!orgId) {
+      toast.error('Organisation non chargée. Veuillez patienter un instant...');
+      return;
+    }
     if (!newCategoryName.trim()) return;
     try {
       const created = await ProductsService.createCategory(orgId, newCategoryName.trim());
@@ -188,8 +198,9 @@ export default function ProductsPage() {
       setNewCategoryName('');
       setIsCategoryModalOpen(false);
       toast.success('Catégorie ajoutée');
-    } catch {
-      toast.error('Erreur création catégorie');
+    } catch (err: unknown) {
+      const error = err as Error;
+      toast.error(error.message || 'Erreur création catégorie');
     }
   };
 

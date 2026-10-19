@@ -12,7 +12,9 @@ import {
   SlidersHorizontal,
   AlertTriangle,
   History,
+  Download,
 } from 'lucide-react';
+import { exportInventoryToCSV } from '@/lib/export';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
@@ -47,9 +49,10 @@ export default function InventoryPage() {
   const [note, setNote] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const orgId = organization?.id || 'org_pointe_noire_01';
+  const orgId = organization?.id;
 
   const fetchData = React.useCallback(async () => {
+    if (!orgId) return;
     setIsLoading(true);
     try {
       const [prods, movs] = await Promise.all([
@@ -80,6 +83,10 @@ export default function InventoryPage() {
 
   const handleSaveMovement = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!orgId) {
+      toast.error('Organisation non chargée. Veuillez patienter un instant...');
+      return;
+    }
     if (!selectedProduct) {
       toast.error('Veuillez sélectionner un produit');
       return;
@@ -107,11 +114,11 @@ export default function InventoryPage() {
           ? `Sortie de stock enregistrée (-${quantity})`
           : `Stock physique ajusté à ${quantity}`
       );
-
       setIsModalOpen(false);
       fetchData();
-    } catch {
-      toast.error('Erreur lors de l’enregistrement du mouvement');
+    } catch (err: unknown) {
+      const error = err as Error;
+      toast.error(error.message || 'Erreur lors de l’enregistrement du mouvement');
     } finally {
       setIsSubmitting(false);
     }
@@ -137,34 +144,47 @@ export default function InventoryPage() {
           </p>
         </div>
 
-        {canManageInventory && (
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => handleOpenMovementModal('ADJUSTMENT')}
-            >
-              <SlidersHorizontal className="w-4 h-4 mr-1.5" />
-              Ajustement Physique
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => handleOpenMovementModal('OUT')}
-            >
-              <ArrowDownLeft className="w-4 h-4 mr-1.5 text-rose-500" />
-              Sortie / Perte
-            </Button>
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => handleOpenMovementModal('IN')}
-            >
-              <ArrowUpRight className="w-4 h-4 mr-1.5" />
-              Entrée de Stock
-            </Button>
-          </div>
-        )}
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => exportInventoryToCSV(products)}
+            disabled={products.length === 0}
+            title="Exporter la valorisation du stock au format Excel / CSV"
+          >
+            <Download className="w-4 h-4 mr-1.5 text-slate-500" />
+            Exporter (Excel/CSV)
+          </Button>
+
+          {canManageInventory && (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleOpenMovementModal('ADJUSTMENT')}
+              >
+                <SlidersHorizontal className="w-4 h-4 mr-1.5" />
+                Ajustement
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleOpenMovementModal('OUT')}
+              >
+                <ArrowDownLeft className="w-4 h-4 mr-1.5 text-rose-500" />
+                Sortie / Perte
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => handleOpenMovementModal('IN')}
+              >
+                <ArrowUpRight className="w-4 h-4 mr-1.5" />
+                Entrée de Stock
+              </Button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Résumé des indicateurs */}
